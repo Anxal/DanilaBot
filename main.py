@@ -38,9 +38,10 @@ MESSAGES = {
     'blocked_slots_updated': "Часы записи обновлены.",
     'admin_added': "Администратор с ID {} добавлен.",
     'date_added': "Дата {} добавлена для записи.",
-    'date_removed': "Дата {} удалена из записи."
+    'date_removed': "Дата {} удалена из записи.",
+    'appointment_deleted': "Запись на {} для {} успешно удалена",
+    'appointment_deleted_user': "Ваша запись на {} была удалена администратором."
 }
-
 
 # Класс для управления пользовательскими данными
 class UserData:
@@ -68,7 +69,6 @@ class UserData:
     def delete(self, user_id: int) -> None:
         self.data.pop(user_id, None)
         self.last_access.pop(user_id, None)
-
 
 # Класс базы данных
 class Database:
@@ -268,16 +268,24 @@ class Database:
             self.conn.rollback()
             return False
 
+    def delete_appointment(self, appointment_id: int) -> bool:
+        try:
+            self.cursor.execute("DELETE FROM appointments WHERE id = ?", (appointment_id,))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Error deleting appointment: {e}")
+            return False
+
     def commit_and_close(self):
         self.conn.commit()
         self.conn.close()
-
 
 # Глобальные переменные
 user_data = UserData()
 bot = None
 db = None
-
 
 # Обработчик сигналов
 def signal_handler(signum, frame):
@@ -289,7 +297,6 @@ def signal_handler(signum, frame):
         logger.error(f"Error during shutdown: {e}")
     logger.info("Cleanup completed, shutting down")
     sys.exit(0)
-
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -306,7 +313,6 @@ except Exception as e:
     logger.error(f"Failed to initialize bot or database: {e}")
     raise
 
-
 # Создание клавиатуры главного меню
 def create_markup():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -314,7 +320,6 @@ def create_markup():
     markup.row(types.KeyboardButton("📋 Мои записи"), types.KeyboardButton("❌ Отменить запись"))
     markup.row(types.KeyboardButton("👤 Мой профиль"))
     return markup
-
 
 # Обработка команды /start
 @bot.message_handler(commands=['start'])
@@ -331,7 +336,6 @@ def send_welcome(message):
         logger.error(f"Error in send_welcome: {e}")
         bot.send_message(message.chat.id, "Произошла ошибка. Попробуйте позже.", reply_markup=create_markup())
 
-
 # Генерация клавиатуры с датами
 def generate_dates_keyboard():
     markup = types.InlineKeyboardMarkup()
@@ -346,7 +350,6 @@ def generate_dates_keyboard():
             button_text = f"{date_str} ({weekday})"
             markup.add(types.InlineKeyboardButton(text=button_text, callback_data=f"date_{date_str}"))
     return markup
-
 
 # Генерация клавиатуры со временем
 def generate_time_keyboard(selected_date: str):
@@ -364,7 +367,6 @@ def generate_time_keyboard(selected_date: str):
         markup.add(*time_buttons[i:i + 3])
     markup.add(types.InlineKeyboardButton(text="← Назад", callback_data="back_to_dates"))
     return markup
-
 
 # Обработка кнопки "Записать на прием"
 @bot.message_handler(func=lambda message: message.text == "📅 Записать на прием")
@@ -393,7 +395,6 @@ def start_appointment(message):
         user_data.set(user_id, 'step', 'fullname')
         bot.send_message(message.chat.id, f"Ваш Telegram ID: {user_id}\n" + MESSAGES['enter_fullname'])
         bot.register_next_step_handler(message, process_fullname)
-
 
 # Обработка выбора действия
 @bot.callback_query_handler(func=lambda call: call.data in ["use_saved", "update_data", "enter_new"])
@@ -426,14 +427,12 @@ def handle_data_choice(call):
         bot.edit_message_text(MESSAGES['enter_fullname'], call.message.chat.id, call.message.message_id)
         bot.register_next_step_handler(call.message, process_fullname)
 
-
 # Обработка продолжения с текущими данными
 @bot.callback_query_handler(func=lambda call: call.data == "proceed")
 def proceed_with_data(call):
     user_id = call.from_user.id
     bot.edit_message_text(MESSAGES['enter_service'], call.message.chat.id, call.message.message_id)
     bot.register_next_step_handler(call.message, process_service)
-
 
 # Обработка выбора автомобиля
 @bot.callback_query_handler(func=lambda call: call.data.startswith('car_'))
@@ -458,7 +457,6 @@ def handle_car_choice(call):
     bot.edit_message_text(MESSAGES['enter_service'], call.message.chat.id, call.message.message_id)
     bot.register_next_step_handler(call.message, process_service)
 
-
 # Обработка ввода ФИО
 def process_fullname(message):
     if message.text.lower() == "отмена":
@@ -473,7 +471,6 @@ def process_fullname(message):
     user_data.set(message.from_user.id, 'full_name', text)
     bot.send_message(message.chat.id, MESSAGES['enter_vehicle'])
     bot.register_next_step_handler(message, process_vehicle)
-
 
 # Обновление ФИО
 def process_fullname_update(message):
@@ -492,7 +489,6 @@ def process_fullname_update(message):
     bot.send_message(message.chat.id, f"Обновите телефон (было: {old_data.get('phone_number', 'не указан')}):")
     bot.register_next_step_handler(message, process_phone_update)
 
-
 # Обработка ввода автомобиля
 def process_vehicle(message):
     if message.text.lower() == "отмена":
@@ -507,7 +503,6 @@ def process_vehicle(message):
     user_data.set(message.from_user.id, 'vehicle_info', text)
     bot.send_message(message.chat.id, MESSAGES['enter_service'])
     bot.register_next_step_handler(message, process_service)
-
 
 # Обновление автомобиля
 def process_vehicle_update(message):
@@ -524,7 +519,6 @@ def process_vehicle_update(message):
     user_data.set(user_id, 'vehicle_info', text)
     bot.send_message(message.chat.id, MESSAGES['enter_service'])
     bot.register_next_step_handler(message, process_service)
-
 
 # Обработка ввода услуг
 def process_service(message):
@@ -551,7 +545,6 @@ def process_service(message):
         bot.send_message(message.chat.id, MESSAGES['enter_phone'], reply_markup=None)
         bot.register_next_step_handler(message, process_phone)
 
-
 # Выбор использования сохраненного номера
 def process_phone_choice(message):
     user_id = message.from_user.id
@@ -576,11 +569,9 @@ def process_phone_choice(message):
                          reply_markup=markup)
         bot.register_next_step_handler(message, process_phone_choice)
 
-
 # Валидация телефона
 def is_valid_phone(phone: str) -> bool:
     return bool(re.match(r'^\+7\d{10}$', phone.strip()))
-
 
 # Обработка ввода телефона
 def process_phone(message):
@@ -606,7 +597,6 @@ def process_phone(message):
     user_data.set(user_id, 'phone_number', message.text)
     bot.send_message(message.chat.id, MESSAGES['enter_datetime'], reply_markup=generate_dates_keyboard())
 
-
 # Обновление телефона
 def process_phone_update(message):
     if message.text.lower() == "отмена":
@@ -623,7 +613,6 @@ def process_phone_update(message):
     bot.send_message(message.chat.id, f"Обновите автомобиль (было: {old_data.get('vehicle_info', 'не указан')}):")
     bot.register_next_step_handler(message, process_vehicle_update)
 
-
 # Обработка выбора даты
 @bot.callback_query_handler(func=lambda call: call.data.startswith('date_'))
 def process_date_selection(call):
@@ -637,7 +626,6 @@ def process_date_selection(call):
     except Exception as e:
         logger.error(f"Error processing date selection: {e}")
         bot.edit_message_text(f"Произошла ошибка: {str(e)}", call.message.chat.id, call.message.message_id)
-
 
 # Обработка выбора времени
 @bot.callback_query_handler(func=lambda call: call.data.startswith('time_'))
@@ -686,7 +674,6 @@ def process_time_selection(call):
         logger.error(f"Error in time selection: {e}")
         bot.edit_message_text(f"Произошла ошибка: {str(e)}", call.message.chat.id, call.message.message_id)
 
-
 # Обработка решения администратора
 @bot.callback_query_handler(func=lambda call: call.data.startswith('approve_') or call.data.startswith('reject_'))
 def process_admin_decision(call):
@@ -725,7 +712,6 @@ def process_admin_decision(call):
         logger.error(f"Error processing admin decision: {e}")
         bot.answer_callback_query(call.id, "Произошла ошибка")
 
-
 # Обработка возврата к выбору даты
 @bot.callback_query_handler(func=lambda call: call.data == 'back_to_dates')
 def back_to_dates(call):
@@ -737,7 +723,6 @@ def back_to_dates(call):
     except Exception as e:
         logger.error(f"Error returning to dates: {e}")
         bot.edit_message_text(f"Произошла ошибка: {str(e)}", call.message.chat.id, call.message.message_id)
-
 
 # Обработка отмены записи
 @bot.message_handler(func=lambda message: message.text == "❌ Отменить запись")
@@ -759,7 +744,6 @@ def cancel_user_appointment_start(message):
         logger.error(f"Error in cancel appointment: {e}")
         bot.reply_to(message, MESSAGES['system_error'])
 
-
 # Подтверждение отмены
 @bot.callback_query_handler(func=lambda call: call.data.startswith('cancel_'))
 def process_cancellation(call):
@@ -774,7 +758,6 @@ def process_cancellation(call):
         logger.error(f"Error processing cancellation: {e}")
         bot.edit_message_text(f"Произошла ошибка: {str(e)}", call.message.chat.id, call.message.message_id)
 
-
 # Показать мои записи
 @bot.message_handler(func=lambda message: message.text == "📋 Мои записи")
 def show_my_appointments(message):
@@ -788,7 +771,8 @@ def show_my_appointments(message):
             'pending_approval': 'Ожидает одобрения',
             'approved': 'Одобрена',
             'rejected': 'Отклонена',
-            'cancelled': 'Отменена'
+            'cancelled': 'Отменена',
+            'completed': 'Выполнена'
         }
         for appointment in appointments:
             response += f"\n📅 Дата: {appointment[1]}\n👤 ФИО: {appointment[2]}\n🚗 Авто: {appointment[3]}\n🔧 Услуги: {appointment[4]}\n📊 Статус: {status_translation.get(appointment[5], appointment[5])}\n-------------------------\n"
@@ -801,7 +785,6 @@ def show_my_appointments(message):
     except Exception as e:
         logger.error(f"Error showing appointments: {e}")
         bot.reply_to(message, MESSAGES['system_error'])
-
 
 # Показать профиль
 @bot.message_handler(func=lambda message: message.text == "👤 Мой профиль")
@@ -819,7 +802,6 @@ def show_profile(message):
     else:
         bot.send_message(message.chat.id, "Ваш профиль пуст. Сделайте первую запись!", reply_markup=create_markup())
 
-
 # Добавление нового администратора
 @bot.message_handler(commands=['add_admin'])
 def add_admin(message):
@@ -836,7 +818,6 @@ def add_admin(message):
     except (IndexError, ValueError):
         bot.reply_to(message, "Используйте: /add_admin <Telegram ID> (например, /add_admin 987654321)")
 
-
 # Админ-панель
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
@@ -847,11 +828,11 @@ def admin_panel(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(types.KeyboardButton("Показать все записи"))
     markup.row(types.KeyboardButton("Экспорт записей"))
+    markup.row(types.KeyboardButton("Удалить запись"))
     markup.row(types.KeyboardButton("Управление часами записи"))
     markup.row(types.KeyboardButton("Управление датами записи"))
     markup.row(types.KeyboardButton("Главное меню"))
     bot.reply_to(message, "Панель администратора:", reply_markup=markup)
-
 
 # Показать все записи (админ)
 @bot.message_handler(func=lambda message: message.text == "Показать все записи")
@@ -866,7 +847,8 @@ def show_all_appointments(message):
         'pending_approval': 'Ожидает одобрения',
         'approved': 'Одобрена',
         'rejected': 'Отклонена',
-        'cancelled': 'Отменена'
+        'cancelled': 'Отменена',
+        'completed': 'Выполнена'
     }
     response = "Все записи:\n\n"
     for app in appointments:
@@ -877,7 +859,6 @@ def show_all_appointments(message):
             bot.send_message(message.chat.id, part)
     else:
         bot.send_message(message.chat.id, response)
-
 
 # Экспорт записей (админ)
 @bot.message_handler(func=lambda message: message.text == "Экспорт записей")
@@ -896,7 +877,8 @@ def export_appointments(message):
             'pending_approval': 'Ожидает одобрения',
             'approved': 'Одобрена',
             'rejected': 'Отклонена',
-            'cancelled': 'Отменена'
+            'cancelled': 'Отменена',
+            'completed': 'Выполнена'
         }
         csv_data = "Дата,ФИО,Автомобиль,Услуги,Телефон,Статус\n"
         for app in appointments:
@@ -917,6 +899,109 @@ def export_appointments(message):
         logger.error(f"Export failed: {str(e)}")
         bot.reply_to(message, f"Ошибка при экспорте: {str(e)}")
 
+# Удаление записи (админ)
+@bot.message_handler(func=lambda message: message.text == "Удалить запись")
+def delete_appointment_start(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "У вас нет прав доступа.")
+        return
+    try:
+        appointments = db.get_all_appointments()
+        if not appointments:
+            bot.reply_to(message, "Нет записей для удаления.")
+            return
+        markup = types.InlineKeyboardMarkup()
+        status_translation = {
+            'pending_approval': 'Ожидает',
+            'approved': 'Одобрена',
+            'rejected': 'Отклонена',
+            'cancelled': 'Отменена',
+            'completed': 'Выполнена'
+        }
+        for app in appointments:
+            status = status_translation.get(app[8], app[8])
+            button_text = f"{app[7]} - {app[3]} ({status})"
+            markup.add(types.InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"delete_app_{app[0]}"
+            ))
+        markup.add(types.InlineKeyboardButton("Назад", callback_data="back_to_admin"))
+        bot.reply_to(message, "Выберите запись для удаления:", reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Error in delete_appointment_start: {e}")
+        bot.reply_to(message, MESSAGES['system_error'])
+
+# Обработка выбора записи для удаления
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_app_'))
+def process_delete_appointment(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "У вас нет прав доступа.")
+        return
+    try:
+        appointment_id = int(call.data.replace('delete_app_', ''))
+        appointment = db.get_appointment_by_id(appointment_id)
+
+        if not appointment:
+            bot.answer_callback_query(call.id, "Запись не найдена")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("Да, удалить", callback_data=f"confirm_delete_{appointment_id}"),
+            types.InlineKeyboardButton("Нет, отменить", callback_data="cancel_delete")
+        )
+        confirmation_text = (
+            f"Вы уверены, что хотите удалить запись?\n"
+            f"📅 Дата: {appointment[7]}\n"
+            f"👤 Клиент: {appointment[3]}\n"
+            f"🚗 Авто: {appointment[4]}\n"
+            f"🔧 Услуги: {appointment[5]}"
+        )
+        bot.edit_message_text(confirmation_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        logger.error(f"Error in process_delete_appointment: {e}")
+        bot.answer_callback_query(call.id, "Произошла ошибка")
+
+# Подтверждение удаления
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_delete_') or call.data == "cancel_delete")
+def confirm_delete_appointment(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "У вас нет прав доступа.")
+        return
+    try:
+        if call.data == "cancel_delete":
+            bot.edit_message_text("Удаление отменено", call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id)
+            return
+
+        appointment_id = int(call.data.replace('confirm_delete_', ''))
+        appointment = db.get_appointment_by_id(appointment_id)
+
+        if not appointment:
+            bot.edit_message_text("Запись не найдена", call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id)
+            return
+
+        if db.delete_appointment(appointment_id):
+            bot.edit_message_text(
+                f"Запись на {appointment[7]} для {appointment[3]} успешно удалена",
+                call.message.chat.id,
+                call.message.message_id
+            )
+            if appointment[8] in ['approved', 'pending_approval']:
+                bot.send_message(
+                    appointment[1],
+                    f"Ваша запись на {appointment[7]} была удалена администратором."
+                )
+            bot.answer_callback_query(call.id, "Запись удалена")
+        else:
+            bot.edit_message_text("Ошибка при удалении записи", call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id, "Ошибка")
+    except Exception as e:
+        logger.error(f"Error in confirm_delete_appointment: {e}")
+        bot.edit_message_text(f"Произошла ошибка: {str(e)}", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id, "Произошла ошибка")
 
 # Управление часами записи (админ)
 @bot.message_handler(func=lambda message: message.text == "Управление часами записи")
@@ -933,7 +1018,6 @@ def manage_slots(message):
         markup.add(types.InlineKeyboardButton(f"Управление {date_str}", callback_data=f"manage_{date_str}"))
     bot.send_message(message.chat.id, "Выберите день для управления часами:", reply_markup=markup)
 
-
 # Управление датами записи (админ)
 @bot.message_handler(func=lambda message: message.text == "Управление датами записи")
 def manage_dates(message):
@@ -946,7 +1030,6 @@ def manage_dates(message):
     markup.add(types.InlineKeyboardButton("Вернуться в админ-панель", callback_data="back_to_admin"))
     bot.send_message(message.chat.id, "Управление датами записи:", reply_markup=markup)
 
-
 # Обработка управления датами
 @bot.callback_query_handler(func=lambda call: call.data in ["add_date", "remove_date"])
 def process_date_management(call):
@@ -956,7 +1039,7 @@ def process_date_management(call):
     if call.data == "add_date":
         markup = types.InlineKeyboardMarkup(row_width=3)
         today = datetime.now()
-        for i in range(7):  # Предлагаем 7 дней вперед
+        for i in range(7):
             date = today + timedelta(days=i)
             date_str = date.strftime("%d.%m.%Y")
             markup.add(types.InlineKeyboardButton(date_str, callback_data=f"add_date_{date_str}"))
@@ -975,7 +1058,6 @@ def process_date_management(call):
         bot.edit_message_text("Выберите дату для удаления:", call.message.chat.id, call.message.message_id,
                               reply_markup=markup)
 
-
 # Возврат к управлению датами
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_manage_dates")
 def back_to_manage_dates(call):
@@ -987,7 +1069,6 @@ def back_to_manage_dates(call):
     markup.add(types.InlineKeyboardButton("Вернуться в админ-панель", callback_data="back_to_admin"))
     bot.edit_message_text("Управление датами записи:", call.message.chat.id, call.message.message_id,
                           reply_markup=markup)
-
 
 # Добавление даты
 @bot.callback_query_handler(func=lambda call: call.data.startswith('add_date_'))
@@ -1002,7 +1083,6 @@ def add_date(call):
     else:
         bot.answer_callback_query(call.id, "Ошибка при добавлении даты")
 
-
 # Удаление даты
 @bot.callback_query_handler(func=lambda call: call.data.startswith('remove_date_'))
 def remove_date(call):
@@ -1015,7 +1095,6 @@ def remove_date(call):
         bot.answer_callback_query(call.id, "Дата удалена")
     else:
         bot.answer_callback_query(call.id, "Ошибка при удалении даты")
-
 
 # Выбор часов для блокировки/разблокировки
 @bot.callback_query_handler(func=lambda call: call.data.startswith('manage_'))
@@ -1041,7 +1120,6 @@ def manage_slots_day(call):
     markup.add(types.InlineKeyboardButton("Назад", callback_data="back_to_admin"))
     bot.edit_message_text(f"Управление часами на {selected_date}:", call.message.chat.id, call.message.message_id,
                           reply_markup=markup)
-
 
 # Блокировка/разблокировка слота
 @bot.callback_query_handler(func=lambda call: call.data.startswith('block_') or call.data.startswith('unblock_'))
@@ -1079,7 +1157,6 @@ def process_slot_action(call):
     bot.edit_message_text(f"Управление часами на {selected_date}:", call.message.chat.id, call.message.message_id,
                           reply_markup=markup)
 
-
 # Возврат к админ-панели
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_admin")
 def back_to_admin(call):
@@ -1088,23 +1165,21 @@ def back_to_admin(call):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(types.KeyboardButton("Показать все записи"))
     markup.row(types.KeyboardButton("Экспорт записей"))
+    markup.row(types.KeyboardButton("Удалить запись"))
     markup.row(types.KeyboardButton("Управление часами записи"))
     markup.row(types.KeyboardButton("Управление датами записи"))
     markup.row(types.KeyboardButton("Главное меню"))
     bot.edit_message_text("Панель администратора закрыта", call.message.chat.id, call.message.message_id)
     bot.send_message(call.message.chat.id, "Панель администратора:", reply_markup=markup)
 
-
 # Возврат в главное меню
 @bot.message_handler(func=lambda message: message.text == "Главное меню")
 def return_to_main_menu(message):
     bot.send_message(message.chat.id, "Главное меню:", reply_markup=create_markup())
 
-
 # Функция очистки ввода
 def sanitize_input(text: str) -> str:
     return re.sub(r'[<>;]', '', text.strip())
-
 
 # Запуск бота
 if __name__ == "__main__":
