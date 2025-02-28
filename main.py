@@ -351,6 +351,32 @@ def generate_dates_keyboard():
             markup.add(types.InlineKeyboardButton(text=button_text, callback_data=f"date_{date_str}"))
     return markup
 
+    def cleanup_old_appointments(self, days_threshold: int = 1) -> int:
+        """Удаляет записи старше указанного количества дней"""
+        try:
+            # Получаем текущую дату
+            current_date = datetime.now()
+            # Вычисляем дату, старше которой записи нужно удалить
+            threshold_date = (current_date - timedelta(days=days_threshold)).strftime("%d.%m.%Y")
+            
+            # Запрос на удаление записей
+            self.cursor.execute("""
+                DELETE FROM appointments 
+                WHERE strftime('%d.%m.%Y', substr(appointment_time, 1, 10)) < ?
+            """, (threshold_date,))
+            
+            # Сохраняем количество удаленных записей
+            deleted_count = self.cursor.rowcount
+            self.conn.commit()
+            
+            logger.info(f"Удалено {deleted_count} устаревших записей (старше {days_threshold} дней)")
+            return deleted_count
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Ошибка при удалении старых записей: {e}")
+            return 0
+
+
 # Генерация клавиатуры со временем
 def generate_time_keyboard(selected_date: str):
     markup = types.InlineKeyboardMarkup(row_width=3)
@@ -555,6 +581,36 @@ def process_phone_choice(message):
         bot.send_message(message.chat.id, "Ввод отменен", reply_markup=create_markup())
         return
     elif message.text.lower() in ["изменить номер", "изменить"]:
+
+# Запускаем автоматическую чистку старых записей при старте бота
+def setup_automatic_cleanup():
+    try:
+        deleted_count = db.cleanup_old_appointments(1)  # Удаляем записи старше 1 дня
+        logger.info(f"Автоматическая чистка завершена: удалено {deleted_count} устаревших записей")
+    except Exception as e:
+        logger.error(f"Ошибка при автоматической чистке: {e}")
+
+# Запуск бота
+if __name__ == "__main__":
+    logger.info("Bot starting...")
+    try:
+        # Запускаем автоматическую чистку при старте
+        setup_automatic_cleanup()
+        
+        bot.remove_webhook()
+        updates = bot.get_updates(offset=-1, timeout=1)
+        if updates:
+            bot.get_updates(offset=updates[-1].update_id + 1)
+        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        if db and db.is_connected():
+            db.commit_and_close()
+        raise
+    finally:
+        if db and db.is_connected():
+            db.commit_and_close()
+
         bot.send_message(message.chat.id, MESSAGES['enter_phone'], reply_markup=None)
         bot.register_next_step_handler(message, process_phone)
     elif is_valid_phone(message.text) or message.text == saved_data['phone_number']:
@@ -867,6 +923,11 @@ def export_appointments(message):
         bot.reply_to(message, "У вас нет прав доступа.")
         return
     try:
+        # Очистка старых записей перед экспортом
+        cleaned_count = db.cleanup_old_appointments(1)  # Удаляем записи старше 1 дня
+        if cleaned_count > 0:
+            logger.info(f"Удалено {cleaned_count} старых записей перед экспортом")
+        
         appointments = db.get_all_appointments()
         logger.info(f"Exporting {len(appointments)} appointments")
         if not appointments:
@@ -880,15 +941,29 @@ def export_appointments(message):
             'cancelled': 'Отменена',
             'completed': 'Выполнена'
         }
-        csv_data = "Дата,ФИО,Автомобиль,Услуги,Телефон,Статус\n"
+        
+        # Создаем буфер для CSV данных
+        csv_buffer = io.StringIO()
+        csv_buffer.write("Дата,ФИО,Автомобиль,Услуги,Телефон,Статус\n")
+        
         for app in appointments:
             status = status_translation.get(app[8], app[8])
-            row = [str(app[7]), str(app[3]), str(app[4]), str(app[5]), str(app[6]), status]
-            csv_data += ','.join([f'"{field}"' if ',' in field else field for field in row]) + '\n'
+            # Обрабатываем специальные символы в полях
+            date = app[7].replace('"', '""')
+            name = app[3].replace('"', '""')
+            vehicle = app[4].replace('"', '""')
+            service = app[5].replace('"', '""')
+            phone = app[6].replace('"', '""')
+            
+            # Заключаем каждое поле в кавычки
+            csv_buffer.write(f'"{date}","{name}","{vehicle}","{service}","{phone}","{status}"\n')
 
-        csv_bytes = io.BytesIO(csv_data.encode('utf-8-sig'))
+        # Конвертируем в байты с правильной кодировкой
+        csv_bytes = io.BytesIO(csv_buffer.getvalue().encode('utf-8-sig'))
         csv_bytes.seek(0)
-        logger.info(f"CSV data size: {len(csv_data)} characters")
+        
+        logger.info(f"CSV data size: {len(csv_buffer.getvalue())} characters")
+        
         bot.send_document(
             message.chat.id,
             document=types.InputFile(csv_bytes, filename="appointments.csv"),
