@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = "7653090953:AAE24Fq4Ftupk6JkZ_Tje5RQ0vpSANkyX1E"  # Замените на токен от @BotFather
+BOT_TOKEN = "7653090953:AAE24Fq4Ftupk6JkZ_Tje5RQ0vpSANkyX1E"  # Токен от @BotFather
 ADMIN_IDS = [1150119683]  # Список ID администраторов, замените на свои
 DATE_FORMAT = "%d.%m.%Y %H:%M"
 WORKING_HOURS = {'start': 9, 'end': 18, 'interval': 1}
