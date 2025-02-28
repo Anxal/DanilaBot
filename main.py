@@ -167,6 +167,31 @@ class Database:
     def get_blocked_slots(self) -> List[str]:
         self.cursor.execute("SELECT slot_time FROM blocked_slots")
         return [row[0] for row in self.cursor.fetchall()]
+        
+    def cleanup_old_appointments(self, days_threshold: int = 1) -> int:
+        """Удаляет записи старше указанного количества дней"""
+        try:
+            # Получаем текущую дату
+            current_date = datetime.now()
+            # Вычисляем дату, старше которой записи нужно удалить
+            threshold_date = (current_date - timedelta(days=days_threshold)).strftime("%d.%m.%Y")
+            
+            # Запрос на удаление записей
+            self.cursor.execute("""
+                DELETE FROM appointments 
+                WHERE strftime('%d.%m.%Y', substr(appointment_time, 1, 10)) < ?
+            """, (threshold_date,))
+            
+            # Сохраняем количество удаленных записей
+            deleted_count = self.cursor.rowcount
+            self.conn.commit()
+            
+            logger.info(f"Удалено {deleted_count} устаревших записей (старше {days_threshold} дней)")
+            return deleted_count
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Ошибка при удалении старых записей: {e}")
+            return 0
 
     def add_available_date(self, date: str) -> bool:
         try:
@@ -338,43 +363,18 @@ def send_welcome(message):
 
 # Генерация клавиатуры с датами
 def generate_dates_keyboard():
-    markup = types.InlineKeyboardMarkup()
-    available_dates = db.get_available_dates()
-    if not available_dates:
-        markup.add(types.InlineKeyboardButton("Нет доступных дат", callback_data="no_dates"))
-    else:
-        weekday_names = {0: "Пн", 1: "Вт", 2: "Ср", 3: "Чт", 4: "Пт", 5: "Сб", 6: "Вс"}
-        for date_str in available_dates:
-            date = datetime.strptime(date_str, "%d.%m.%Y")
-            weekday = weekday_names[date.weekday()]
-            button_text = f"{date_str} ({weekday})"
-            markup.add(types.InlineKeyboardButton(text=button_text, callback_data=f"date_{date_str}"))
-    return markup
-
-    def cleanup_old_appointments(self, days_threshold: int = 1) -> int:
-        """Удаляет записи старше указанного количества дней"""
-        try:
-            # Получаем текущую дату
-            current_date = datetime.now()
-            # Вычисляем дату, старше которой записи нужно удалить
-            threshold_date = (current_date - timedelta(days=days_threshold)).strftime("%d.%m.%Y")
-            
-            # Запрос на удаление записей
-            self.cursor.execute("""
-                DELETE FROM appointments 
-                WHERE strftime('%d.%m.%Y', substr(appointment_time, 1, 10)) < ?
-            """, (threshold_date,))
-            
-            # Сохраняем количество удаленных записей
-            deleted_count = self.cursor.rowcount
-            self.conn.commit()
-            
-            logger.info(f"Удалено {deleted_count} устаревших записей (старше {days_threshold} дней)")
-            return deleted_count
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Ошибка при удалении старых записей: {e}")
-            return 0
+        markup = types.InlineKeyboardMarkup()
+        available_dates = db.get_available_dates()
+        if not available_dates:
+            markup.add(types.InlineKeyboardButton("Нет доступных дат", callback_data="no_dates"))
+        else:
+            weekday_names = {0: "Пн", 1: "Вт", 2: "Ср", 3: "Чт", 4: "Пт", 5: "Сб", 6: "Вс"}
+            for date_str in available_dates:
+                date = datetime.strptime(date_str, "%d.%m.%Y")
+                weekday = weekday_names[date.weekday()]
+                button_text = f"{date_str} ({weekday})"
+                markup.add(types.InlineKeyboardButton(text=button_text, callback_data=f"date_{date_str}"))
+        return markup
 
 
 # Генерация клавиатуры со временем
@@ -590,6 +590,21 @@ def setup_automatic_cleanup():
     except Exception as e:
         logger.error(f"Ошибка при автоматической чистке: {e}")
 
+# Обработка выбора использования сохраненного номера (продолжение)
+        bot.send_message(message.chat.id, MESSAGES['enter_phone'], reply_markup=None)
+        bot.register_next_step_handler(message, process_phone)
+    elif is_valid_phone(message.text) or message.text == saved_data['phone_number']:
+        user_data.set(user_id, 'phone_number',
+                      message.text if is_valid_phone(message.text) else saved_data['phone_number'])
+        bot.send_message(message.chat.id, MESSAGES['enter_datetime'], reply_markup=generate_dates_keyboard())
+    else:
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add(types.KeyboardButton(saved_data['phone_number']))
+        markup.add(types.KeyboardButton("Изменить номер"))
+        bot.send_message(message.chat.id, "Пожалуйста, выберите один из вариантов или введите корректный номер:",
+                         reply_markup=markup)
+        bot.register_next_step_handler(message, process_phone_choice)
+
 # Запуск бота
 if __name__ == "__main__":
     logger.info("Bot starting...")
@@ -610,20 +625,6 @@ if __name__ == "__main__":
     finally:
         if db and db.is_connected():
             db.commit_and_close()
-
-        bot.send_message(message.chat.id, MESSAGES['enter_phone'], reply_markup=None)
-        bot.register_next_step_handler(message, process_phone)
-    elif is_valid_phone(message.text) or message.text == saved_data['phone_number']:
-        user_data.set(user_id, 'phone_number',
-                      message.text if is_valid_phone(message.text) else saved_data['phone_number'])
-        bot.send_message(message.chat.id, MESSAGES['enter_datetime'], reply_markup=generate_dates_keyboard())
-    else:
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-        markup.add(types.KeyboardButton(saved_data['phone_number']))
-        markup.add(types.KeyboardButton("Изменить номер"))
-        bot.send_message(message.chat.id, "Пожалуйста, выберите один из вариантов или введите корректный номер:",
-                         reply_markup=markup)
-        bot.register_next_step_handler(message, process_phone_choice)
 
 # Валидация телефона
 def is_valid_phone(phone: str) -> bool:
